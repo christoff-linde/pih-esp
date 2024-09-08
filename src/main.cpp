@@ -1,8 +1,30 @@
-#include "WiFi.h"
-#include <HTTPClient.h>
+/*
+ Basic ESP8266 MQTT example
+ This sketch demonstrates the capabilities of the pubsub library in combination
+ with the ESP8266 board/library.
+ It connects to an MQTT server then:
+  - publishes "hello world" to the topic "outTopic" every two seconds
+  - subscribes to the topic "inTopic", printing out any messages
+    it receives. NB - it assumes the received payloads are strings not binary
+  - If the first character of the topic "inTopic" is an 1, switch ON the ESP Led,
+    else switch it off
+ It will reconnect to the server if the connection is lost using a blocking
+ reconnect function. See the 'mqtt_reconnect_nonblocking' example for how to
+ achieve the same result without blocking the main loop.
+ To install the ESP8266 board, (using Arduino 1.6.4+):
+  - Add the following 3rd party board manager under "File -> Preferences -> Additional Boards Manager URLs":
+       http://arduino.esp8266.com/stable/package_esp8266com_index.json
+  - Open the "Tools -> Board -> Board Manager" and click install for the ESP8266"
+  - Select your ESP8266 in "Tools -> Board"
+*/
+
+#include <WiFi.h>
+#include <PubSubClient.h>
 #include <Adafruit_Sensor.h>
+#include <ArduinoJson.h>
 #include <DHT.h>
 #include <DHT_U.h>
+#include "Arduino.h"
 
 #define DHTPIN D2
 #define DHTTYPE DHT22
@@ -10,11 +32,26 @@
 DHT_Unified dht(DHTPIN, DHTTYPE);
 uint32_t delayMS;
 
+// Update these with values suitable for your network.
+
+// TODO: change following values
+// TODO: find way to set "env" variables
 const char *ssid = "";
 const char *password = "";
+const char *mqtt_server = "192.168.0.105";
 
-HTTPClient http;
-String serverName = "http://192.168.0.101:8000/api/client/v1/update-sensor";
+WiFiClient espClient;
+PubSubClient client(espClient);
+unsigned long lastMsg = 0;
+#define MSG_BUFFER_SIZE (50)
+char msg[MSG_BUFFER_SIZE];
+int value = 0;
+
+String clientId = "ESP32Client-";
+
+void generateClientId() {
+  clientId.concat(String(random(0xffff), HEX));
+}
 
 void initWifi()
 {
@@ -107,11 +144,67 @@ void initSensors()
   delayMS = sensor.min_delay / 1000;
 }
 
+void callback(char *topic, byte *payload, unsigned int length)
+{
+  Serial.print("Message arrived [");
+  Serial.print(topic);
+  Serial.print("] ");
+  for (int i = 0; i < length; i++)
+  {
+    Serial.print((char)payload[i]);
+  }
+  Serial.println();
+
+  // Switch on the LED if an 1 was received as first character
+  if ((char)payload[0] == '1')
+  {
+    digitalWrite(BUILTIN_LED, LOW); // Turn the LED on (Note that LOW is the voltage level
+    // but actually the LED is on; this is because
+    // it is active low on the ESP-01)
+  }
+  else
+  {
+    digitalWrite(BUILTIN_LED, HIGH); // Turn the LED off by making the voltage HIGH
+  }
+}
+
+void initMqtt()
+{
+  Serial.println("Init MQTT");
+  // Set MQTT properties
+  client.setServer(mqtt_server, 1883);
+  client.setCallback(callback);
+}
+
+void reconnect()
+{
+  // Loop until we're reconnected
+  while (!client.connected())
+  {
+    Serial.print("Attempting MQTT connection...");
+    // Create a random client ID
+    String clientId = "ESP32Client-";
+    clientId += String(random(0xffff), HEX);
+    // Attempt to connect
+    if (client.connect(clientId.c_str()))
+    {
+      Serial.println("connected");
+    }
+    else
+    {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 5 seconds");
+      // Wait 5 seconds before retrying
+      delay(5000);
+    }
+  }
+}
+
 void setup()
 {
-  delay(100);
+  pinMode(BUILTIN_LED, OUTPUT); // Initialize the BUILTIN_LED pin as an output
   Serial.begin(115200);
-  Serial.println("Starting setup");
 
   // Set WiFi to station mode and disconnect from an AP if it was previously connected
   WiFi.mode(WIFI_STA);
@@ -121,42 +214,65 @@ void setup()
   networkScan();
   initWifi();
   initSensors();
+  initMqtt();
+
+  // Call the function to generate the client ID
+  generateClientId();
+
   Serial.println("Setup done");
 }
 
 void loop()
 {
-  delay(delayMS);
-
-  sensors_event_t event;
-  dht.temperature().getEvent(&event);
-  float temperature = event.temperature;
-  if (isnan(temperature))
+  if (!client.connected())
   {
-    Serial.println(F("Error reading temperature!"));
+    reconnect();
   }
-  else
-  {
-    Serial.print(F("Temperature: "));
-    Serial.print(temperature);
-    Serial.println(F("°C"));
-  }
+  client.loop();
 
-  dht.humidity().getEvent(&event);
-  float humidity = event.relative_humidity;
-  if (isnan(humidity))
+  unsigned long now = millis();
+  if (now - lastMsg > delayMS)
   {
-    Serial.println(F("Error reading humidity!"));
-  }
-  else
-  {
-    Serial.print(F("Humidity: "));
-    Serial.print(humidity);
-    Serial.println(F("%"));
-  }
+    lastMsg = now;
+    sensors_event_t event;
+    dht.temperature().getEvent(&event);
+    float temperature = event.temperature;
+    if (isnan(temperature))
+    {
+      Serial.println(F("Error reading temperature!"));
+    }
+    else
+    {
+      Serial.print(F("Temperature: \t"));
+      Serial.print(temperature);
+      Serial.println(F("°C"));
 
-  String serverPath = serverName + "?sensor_id=DHT22_01&temperature=" + String(temperature) + "&humidity=" + String(humidity);
-  http.begin(serverPath.c_str());
+      StaticJsonDocument<200> doc;
+      doc["device_id"] = clientId;
+      doc["data"][0] = temperature;
+      char json[200];
+      serializeJson(doc, json);
+      client.publish("pih/temperature", json);
+    }
 
-  int httpResponseCode = http.GET();
+    dht.humidity().getEvent(&event);
+    float humidity = event.relative_humidity;
+    if (isnan(humidity))
+    {
+      Serial.println(F("Error reading humidity!"));
+    }
+    else
+    {
+      Serial.print(F("Humidity: \t"));
+      Serial.print(humidity);
+      Serial.println(F("%"));
+      StaticJsonDocument<200> doc;
+      doc["device_id"] = clientId;
+      doc["data"][0] = humidity;
+      char json[200];
+
+      serializeJson(doc, json);
+      client.publish("pih/humidity", json);
+    }
+  }
 }
