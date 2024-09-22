@@ -38,7 +38,8 @@ uint32_t delayMS;
 // TODO: find way to set "env" variables
 const char *ssid = "";
 const char *password = "";
-const char *mqtt_server = "192.168.0.105";
+const char *mqtt_server = "192.168.0.117";
+const char* location = "top-bedroom-01";
 
 WiFiClient espClient;
 PubSubClient client(espClient);
@@ -47,11 +48,11 @@ unsigned long lastMsg = 0;
 char msg[MSG_BUFFER_SIZE];
 int value = 0;
 
-String clientId = "ESP32Client-";
+String clientId = "ESP32Client-c1c32fcc008a";
 
-void generateClientId() {
-  clientId.concat(String(random(0xffff), HEX));
-}
+// void generateClientId() {
+//   clientId.concat(String(random(0xffff), HEX));
+// }
 
 void initWifi()
 {
@@ -206,6 +207,7 @@ void setup()
   pinMode(BUILTIN_LED, OUTPUT); // Initialize the BUILTIN_LED pin as an output
   Serial.begin(115200);
 
+  Serial.println("Starting setup for ESP32 Client:" + clientId);
   // Set WiFi to station mode and disconnect from an AP if it was previously connected
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
@@ -215,9 +217,6 @@ void setup()
   initWifi();
   initSensors();
   initMqtt();
-
-  // Call the function to generate the client ID
-  generateClientId();
 
   Serial.println("Setup done");
 }
@@ -234,6 +233,10 @@ void loop()
   if (now - lastMsg > delayMS)
   {
     lastMsg = now;
+
+    StaticJsonDocument<200> doc;
+    doc["device_id"] = clientId;
+
     sensors_event_t event;
     dht.temperature().getEvent(&event);
     float temperature = event.temperature;
@@ -246,13 +249,7 @@ void loop()
       Serial.print(F("Temperature: \t"));
       Serial.print(temperature);
       Serial.println(F("°C"));
-
-      StaticJsonDocument<200> doc;
-      doc["device_id"] = clientId;
-      doc["data"][0] = temperature;
-      char json[200];
-      serializeJson(doc, json);
-      client.publish("pih/temperature", json);
+      doc["temperature"] = temperature;
     }
 
     dht.humidity().getEvent(&event);
@@ -266,13 +263,11 @@ void loop()
       Serial.print(F("Humidity: \t"));
       Serial.print(humidity);
       Serial.println(F("%"));
-      StaticJsonDocument<200> doc;
-      doc["device_id"] = clientId;
-      doc["data"][0] = humidity;
-      char json[200];
-
-      serializeJson(doc, json);
-      client.publish("pih/humidity", json);
+      doc["humidity"] = humidity;
     }
+
+    char json[200];
+    serializeJson(doc, json);
+    client.publish("pih", json);
   }
 }
