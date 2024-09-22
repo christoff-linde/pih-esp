@@ -39,7 +39,6 @@ uint32_t delayMS;
 const char *ssid = "";
 const char *password = "";
 const char *mqtt_server = "192.168.0.117";
-const char* location = "top-bedroom-01";
 
 WiFiClient espClient;
 PubSubClient client(espClient);
@@ -48,11 +47,8 @@ unsigned long lastMsg = 0;
 char msg[MSG_BUFFER_SIZE];
 int value = 0;
 
+// Create a new ID for each ESP client device
 String clientId = "ESP32Client-c1c32fcc008a";
-
-// void generateClientId() {
-//   clientId.concat(String(random(0xffff), HEX));
-// }
 
 void initWifi()
 {
