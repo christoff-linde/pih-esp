@@ -1,30 +1,13 @@
-/*
- Basic ESP8266 MQTT example
- This sketch demonstrates the capabilities of the pubsub library in combination
- with the ESP8266 board/library.
- It connects to an MQTT server then:
-  - publishes "hello world" to the topic "outTopic" every two seconds
-  - subscribes to the topic "inTopic", printing out any messages
-    it receives. NB - it assumes the received payloads are strings not binary
-  - If the first character of the topic "inTopic" is an 1, switch ON the ESP Led,
-    else switch it off
- It will reconnect to the server if the connection is lost using a blocking
- reconnect function. See the 'mqtt_reconnect_nonblocking' example for how to
- achieve the same result without blocking the main loop.
- To install the ESP8266 board, (using Arduino 1.6.4+):
-  - Add the following 3rd party board manager under "File -> Preferences -> Additional Boards Manager URLs":
-       http://arduino.esp8266.com/stable/package_esp8266com_index.json
-  - Open the "Tools -> Board -> Board Manager" and click install for the ESP8266"
-  - Select your ESP8266 in "Tools -> Board"
-*/
-
+#include "secrets.h"
 #include <WiFi.h>
+#include <HTTPClient.h>
 #include <PubSubClient.h>
 #include <Adafruit_Sensor.h>
 #include <ArduinoJson.h>
 #include <DHT.h>
 #include <DHT_U.h>
 #include "Arduino.h"
+#include <time.h>
 
 #define DHTPIN D2
 #define DHTTYPE DHT22
@@ -32,15 +15,14 @@
 DHT_Unified dht(DHTPIN, DHTTYPE);
 uint32_t delayMS;
 
-// Update these with values suitable for your network.
+const char *ssid = WIFI_SSID;
+const char *password = WIFI_PASSWORD;
+const char *server_url = SERVER_URL;
 
-// TODO: change following values
-// TODO: find way to set "env" variables
-const char *ssid = "";
-const char *password = "";
-const char *mqtt_server = "192.168.0.117";
+const char *mqtt_server = MQTT_SERVER;
 
 WiFiClient espClient;
+HTTPClient httpClient;
 PubSubClient client(espClient);
 unsigned long lastMsg = 0;
 #define MSG_BUFFER_SIZE (50)
@@ -48,7 +30,10 @@ char msg[MSG_BUFFER_SIZE];
 int value = 0;
 
 // Create a new ID for each ESP client device
-String clientId = "ESP32Client-c1c32fcc008a";
+String clientId = CLIENT_ID;
+
+unsigned long lastNtpSync = 0;
+const unsigned long ntpSyncInterval = 3600000; // 1 hour in ms
 
 void initWifi()
 {
@@ -175,14 +160,11 @@ void initMqtt()
 
 void reconnect()
 {
+  Serial.println("Reconnecting...");
   // Loop until we're reconnected
   while (!client.connected())
   {
     Serial.print("Attempting MQTT connection...");
-    // Create a random client ID
-    String clientId = "ESP32Client-";
-    clientId += String(random(0xffff), HEX);
-    // Attempt to connect
     if (client.connect(clientId.c_str()))
     {
       Serial.println("connected");
@@ -212,26 +194,46 @@ void setup()
   networkScan();
   initWifi();
   initSensors();
-  initMqtt();
+  // TODO: re-enable MQTT if needed
+  // initMqtt();
+
+  configTime(7200, 0, "pool.ntp.org", "time.nist.gov");
+  Serial.println("Waiting for NTP time sync...");
+  time_t now = time(nullptr);
+  while (now < 8 * 3600 * 2) {
+    delay(500);
+    Serial.print(".");
+    now = time(nullptr);
+  }
+  Serial.println("");
+  Serial.println("Time synchronized");
 
   Serial.println("Setup done");
 }
 
 void loop()
 {
-  if (!client.connected())
-  {
-    reconnect();
-  }
-  client.loop();
-
   unsigned long now = millis();
+
+  if (now - lastNtpSync > ntpSyncInterval) {
+    configTime(7200, 0, "pool.ntp.org", "time.nist.gov");
+    lastNtpSync = now;
+    Serial.println("NTP time re-synced");
+  }
+
   if (now - lastMsg > delayMS)
   {
     lastMsg = now;
 
     StaticJsonDocument<200> doc;
-    doc["device_id"] = clientId;
+    // add all data into array in the following format: [{ ...JSON_DATA... }]
+    doc[0]["device_id"] = clientId;
+
+    // store UTC timestamp as integer (seconds since epoch)
+    time_t rawtime;
+    struct tm timeinfo;
+    time(&rawtime);
+    doc[0]["timestamp"] = (long)rawtime;
 
     sensors_event_t event;
     dht.temperature().getEvent(&event);
@@ -245,7 +247,7 @@ void loop()
       Serial.print(F("Temperature: \t"));
       Serial.print(temperature);
       Serial.println(F("°C"));
-      doc["temperature"] = temperature;
+      doc[0]["temperature"] = temperature;
     }
 
     dht.humidity().getEvent(&event);
@@ -259,11 +261,29 @@ void loop()
       Serial.print(F("Humidity: \t"));
       Serial.print(humidity);
       Serial.println(F("%"));
-      doc["humidity"] = humidity;
+      doc[0]["humidity"] = humidity;
     }
 
     char json[200];
     serializeJson(doc, json);
-    client.publish("pih", json);
+    Serial.print("JSON Output: ");
+    Serial.println(json);
+    // TODO: re-enable MQTT publish if needed
+    // client.publish("pih", json);
+    httpClient.begin(server_url);
+    httpClient.addHeader("Content-Type", "application/json");
+    int httpResponseCode = httpClient.POST(json);
+    if (httpResponseCode > 0)
+    {
+      String response = httpClient.getString();
+      Serial.println(httpResponseCode);
+      Serial.println(response);
+    }
+    else
+    {
+      Serial.print("Error on sending POST: ");
+      Serial.println(httpResponseCode);
+    }
+    httpClient.end();
   }
 }
